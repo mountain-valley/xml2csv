@@ -71,3 +71,4 @@ def xml_to_csv(xml_path, video_path):
 
 if __name__ == '__main__':
     xml_to_csv()
+    print("changed")
