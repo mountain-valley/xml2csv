@@ -18,12 +18,34 @@
 
 import xml.etree.ElementTree as ET
 import cv2
+import os
+import ffmpeg
 
+def getBeeLabels(xml_path):
+    cols = ['BeeLabel', 'Index', 'frame', 'Point']
+    # Parsing the XML file
+    xmlparse = Xet.parse(xml_path)
+    root = xmlparse.getroot()
+    for track in xmlparse.findall('track'):
+        beeLabel = track.attrib['label']
+        index = track.attrib['id']
+        points = track.findall('points')
+        if len(points) == 0:
+            continue
+        frame = int(points[0].attrib['frame'])
+        point = points[0].attrib['points'].split(',')
+        newRow = [beeLabel, index, frame, point]
+        rows.append(newRow)
+    df = pd.DataFrame(rows, columns=cols)
+    return df
 
 def xml_to_csv(xml_path, video_path):
     # parse XML file and extract label information
     tree = ET.parse(xml_path)
     root = tree.getroot()
+
+    # #if video is .mkv, convert to .mp4
+    # convert_to_mp4(video_path)
 
     # initialize video capture
     cap = cv2.VideoCapture(video_path)
@@ -69,6 +91,12 @@ def xml_to_csv(xml_path, video_path):
     cap.release()
     cv2.destroyAllWindows()
 
+def convert_to_mp4(mkv_file):
+    name, ext = os.path.splitext(mkv_file)
+    out_name = name + ".mp4"
+    ffmpeg.input(mkv_file).output(out_name).run()
+    print("Finished converting {}".format(mkv_file))
+
+
 if __name__ == '__main__':
-    xml_to_csv()
-    print("here")
+    xml_to_csv("xml/BeeWaggleVideo_36.xml", "raw_videos/output0036.mkv")

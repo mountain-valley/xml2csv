@@ -1,0 +1,8 @@
+#ignore videos
+/raw_videos/*.mkv
+
+#ignore xml files
+/xml/*.xml
+
+#ignore virtual environment
+/venv/
