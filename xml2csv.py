@@ -16,12 +16,32 @@
 # reused so labels are only averaged if they are found within a few frames of eachother.
 
 
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as Xet
 import cv2
 import os
 import ffmpeg
+import pandas as pd
+import numpy as np
+from moviepy.video.compositing.concatenate import concatenate_videoclips
+from moviepy.video.io.VideoFileClip import VideoFileClip
+from icecream import ic
+
+
+# labels = [f'b{i}' for i in range(20)]
+# rows = []
+#
+# labelsStarts = [f'bs{i}' for i in range(20)]
+# labelEnds = [f'be{i}' for i in range(20)]
+# labels = labelsStarts + labelEnds
 
 def getBeeLabels(xml_path):
+    """
+    This function takes an xml file and returns a pandas dataframe with the following columns:
+    frame, label, x, y
+    :param xml_path: path to xml file
+    :return: pandas dataframe
+    """
+    rows = []
     cols = ['BeeLabel', 'Index', 'frame', 'Point']
     # Parsing the XML file
     xmlparse = Xet.parse(xml_path)
@@ -39,57 +59,180 @@ def getBeeLabels(xml_path):
     df = pd.DataFrame(rows, columns=cols)
     return df
 
-def xml_to_csv(xml_path, video_path):
-    # parse XML file and extract label information
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
 
-    # #if video is .mkv, convert to .mp4
-    # convert_to_mp4(video_path)
+def getAngle(p1, p2):
+    v = np.array(p2) - np.array(p1)
+    return np.arctan(v[1] / v[0])
 
-    # initialize video capture
+
+# def createVideoPackage(df, FPS=30, waggle=41):
+#     columns = ['startFrame', 'endFrame', 'angle', 'duration',
+#                'startPointX', 'startPointY', 'endPointX', 'endPointY']
+#     # os.makeDir(dirName)
+#     beeNum = 0
+#     rows = []
+#     for beeId in labels:
+#         beeDf = df[df['BeeLabel'] == beeId].copy()
+#         beeDf.sort_values(by='frame', ignore_index=True, inplace=True)
+#         print(beeDf)
+#         for i, row in beeDf.iterrows():
+#             if i % 2 == 0:
+#                 startFrame = int(row.frame)
+#                 startPoint = np.array(row.Point).astype(float)
+#             else:
+#                 endFrame = int(row.frame)
+#                 endPoint = np.array(row.Point).astype(float)
+#                 duration = (endFrame - startFrame) / FPS
+#                 angle = getAngle(startPoint, endPoint)
+#                 newRow = [startFrame, endFrame, angle, duration, startPoint[0], startPoint[1], endPoint[0], endPoint[1]]
+#                 rows.append(newRow)
+#     df = pd.DataFrame(rows, columns=columns)
+#     df.to_csv(f'WaggleDance_{waggle}_Labels.csv')
+
+
+def createWagglesDF(df, FPS=30, waggle=41):
+    labelsStarts = [f'bs{i}' for i in range(10)]
+    labelEnds = [f'be{i}' for i in range(10)]
+    columns = ['startFrame', 'endFrame', 'angle', 'duration',
+               'startPointX', 'startPointY', 'endPointX', 'endPointY',
+               'framesStart', 'framesEnd', 'pointsStart', 'pointsEnd']
+
+    rows = []
+    for beeId in zip(labelsStarts, labelEnds):
+        # first get a list of all the instances of labels for the given beeId
+        # beeId is a tuple in the format of (bs#, be#)
+        beeIdStart, beeIdEnd = beeId
+        beeDfStart, beeDfEnd = df[df['BeeLabel'] == beeIdStart].copy(), df[df['BeeLabel'] == beeIdEnd].copy()
+        labelList = pd.concat([beeDfEnd, beeDfStart])
+        labelList.sort_values(by='frame', ignore_index=True, inplace=True)  # labelList is a dataframe with all the
+        # label instances of the beeId, ordered by frame
+
+        curBeeLabel = beeIdStart
+        lastBeeLabel = beeIdEnd
+
+        framesStart = []
+        framesEnd = []
+        pointsStart = []
+        pointsEnd = []
+
+        # calulate angle and duration of waggles.
+        for i, row in labelList.iterrows():
+            curBeeLabel = row['BeeLabel']
+            frame = int(row.frame)
+            point = np.array(row.Point).astype(float)
+
+            # if the current label is a start label and the last label was an end label, then we are starting a new
+            # waggle
+            if (curBeeLabel == beeIdStart and lastBeeLabel == beeIdEnd) or i - 1 == len(labelList):
+                # create new row
+                if len(framesEnd) > 0:  # ensure that there are end frames
+                    # average the start and end frames and the start and end points of the last waggle
+                    startFrame = int(np.mean(framesStart))
+                    endFrame = int(np.mean(framesEnd))
+                    startPoint = np.mean(np.array(pointsStart), axis=0)
+                    endPoint = np.mean(np.array(pointsEnd), axis=0)
+
+                    duration = (endFrame - startFrame) / FPS
+                    angle = getAngle(startPoint, endPoint)
+
+                    newRow = [startFrame, endFrame, angle, duration, startPoint[0], startPoint[1], endPoint[0],
+                              endPoint[1], framesStart, framesEnd, pointsStart, pointsEnd]
+                    rows.append(newRow)
+
+                # reset lists with info from new waggle
+                framesStart = [frame]
+                pointsStart = [point]
+                framesEnd = []
+                pointsEnd = []
+
+            # Switching to end points (may be redundant/unnecessary)
+            elif lastBeeLabel == beeIdStart and curBeeLabel == beeIdEnd:
+                framesEnd = [frame]
+                pointsEnd = [point]
+
+            # On start points
+            elif curBeeLabel == beeIdStart:
+                framesStart.append(frame)
+                pointsStart.append(point)
+
+            # on end points
+            elif curBeeLabel == beeIdEnd:
+                framesEnd.append(frame)
+                pointsEnd.append(point)
+
+            lastBeeLabel = curBeeLabel
+
+    df = pd.DataFrame(rows, columns=columns)
+    columns = ['startFrame', 'endFrame', 'angle', 'duration',
+               'startPointX', 'startPointY', 'endPointX', 'endPointY', ]
+    df[columns].to_csv(f'WaggleDance_{waggle}_Labels.csv')
+    return df[columns]
+
+
+# def createVideoPackageWithRuns(df, dirName, FPS=30):
+#     columns = ['StartFrame', 'EndFrame', 'ManualRunAngle_Deg', 'RunTime_Sec']
+#     os.makeDir(dirName)
+#     for beeId in labels:
+#         beeDf = df[df['BeeLabel'] == beeId].copy()
+#         rows = []
+#         for i, row in beeDf.iterrows():
+#             if i % 2 == 0:
+#                 startFrame = row.frame
+#                 startPoint = row.point
+#             else:
+#                 endFrame = row.frame
+#                 endPoint = row.point
+#                 duration = (endFrame - startFrame) / FPS
+#                 angle = getAngle(startPoint, endPoint)
+#                 newRow = [startFrame, endFrame, angle, duration]
+#                 rows.append(newRow)
+#             df = pd.DataFrame(rows, columns=columns)
+
+
+def xml_to_df(xml_path, video_path):
+    label_df = getBeeLabels(xml_path)
+    waggles_df = createWagglesDF(label_df)
+    return waggles_df
+
+def df_to_mp4(df, video_path):
+    # Read the .mkv file
     cap = cv2.VideoCapture(video_path)
 
-    # iterate through frames of video
+    # Get the frames
+    frames = []
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+        frames.append(frame)
 
-        bs_x = []
-        bs_y = []
-        be_x = []
-        be_y = []
+    # Loop through the DataFrame
+    for i, row in df.iterrows():
+        start_frame = row['startFrame']
+        end_frame = row['endFrame']
+        angle = row['angle']
+        start_point = (row['startPointX'], row['startPointY'])
+        end_point = (row['endPointX'], row['endPointY'])
 
-        # iterate through labels in XML file
-        for track in root.findall('track'):
-            label = track.attrib['label']
-            if label.startswith('bs'):
-                # code for finding average position of bs labels
-                for point in track.findall('points'):
-                  x, y = point.attrib['points'].split(',')
-                  bs_x.append(float(x))
-                  bs_y.append(float(y))
+        # Select the frames
+        for j in range(start_frame, end_frame):
+            # Draw the line
+            cv2.line(frames[j], start_point, end_point, (255, 0, 0), 2)
+            # Put the frame number on the frame
+            cv2.putText(frames[j], 'Frame: {}'.format(j), (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
-            elif label.startswith('be'):
-                # code for finding average position of be labels
-                for point in track.findall('points'):
-                  x, y = point.attrib['points'].split(',')
-                  be_x.append(float(x))
-                  be_y.append(float(y))
+    # Write the frames to a new video file
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter('output.mp4', fourcc, 20.0, (640, 480))
+    for frame in frames:
+        out.write(frame)
+    out.release()
+    return out
 
-
-        # draw lines on frame based on average positions of labels
-        cv2.line(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-
-        # display frame
-        cv2.imshow('frame', frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    # release video capture and close window
-    cap.release()
-    cv2.destroyAllWindows()
+def xml_to_mp4(xml_path, video_path):
+    df = xml_to_df(xml_path, video_path)
+    out = df_to_mp4(df, video_path)
+    return out
 
 def convert_to_mp4(mkv_file):
     name, ext = os.path.splitext(mkv_file)
@@ -99,4 +242,4 @@ def convert_to_mp4(mkv_file):
 
 
 if __name__ == '__main__':
-    xml_to_csv("xml/BeeWaggleVideo_36.xml", "raw_videos/output0036.mkv")
+    xml_to_mp4("xml/BeeWaggleVideo_36.xml", "raw_videos/output0036.mkv")
