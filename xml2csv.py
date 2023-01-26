@@ -25,14 +25,8 @@ import numpy as np
 from moviepy.video.compositing.concatenate import concatenate_videoclips
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from icecream import ic
+from collections import deque
 
-
-# labels = [f'b{i}' for i in range(20)]
-# rows = []
-#
-# labelsStarts = [f'bs{i}' for i in range(20)]
-# labelEnds = [f'be{i}' for i in range(20)]
-# labels = labelsStarts + labelEnds
 
 def getBeeLabels(xml_path):
     """
@@ -62,32 +56,7 @@ def getBeeLabels(xml_path):
 
 def getAngle(p1, p2):
     v = np.array(p2) - np.array(p1)
-    return np.arctan(v[1] / v[0])
-
-
-# def createVideoPackage(df, FPS=30, waggle=41):
-#     columns = ['startFrame', 'endFrame', 'angle', 'duration',
-#                'startPointX', 'startPointY', 'endPointX', 'endPointY']
-#     # os.makeDir(dirName)
-#     beeNum = 0
-#     rows = []
-#     for beeId in labels:
-#         beeDf = df[df['BeeLabel'] == beeId].copy()
-#         beeDf.sort_values(by='frame', ignore_index=True, inplace=True)
-#         print(beeDf)
-#         for i, row in beeDf.iterrows():
-#             if i % 2 == 0:
-#                 startFrame = int(row.frame)
-#                 startPoint = np.array(row.Point).astype(float)
-#             else:
-#                 endFrame = int(row.frame)
-#                 endPoint = np.array(row.Point).astype(float)
-#                 duration = (endFrame - startFrame) / FPS
-#                 angle = getAngle(startPoint, endPoint)
-#                 newRow = [startFrame, endFrame, angle, duration, startPoint[0], startPoint[1], endPoint[0], endPoint[1]]
-#                 rows.append(newRow)
-#     df = pd.DataFrame(rows, columns=columns)
-#     df.to_csv(f'WaggleDance_{waggle}_Labels.csv')
+    return np.arctan(v[1] / v[0])  # TODO: account for dividing by zero
 
 
 def createWagglesDF(df, FPS=30, waggle=41):
@@ -165,28 +134,9 @@ def createWagglesDF(df, FPS=30, waggle=41):
     df = pd.DataFrame(rows, columns=columns)
     columns = ['startFrame', 'endFrame', 'angle', 'duration',
                'startPointX', 'startPointY', 'endPointX', 'endPointY', ]
+    df = df.sort_values(by='startFrame')
     df[columns].to_csv(f'WaggleDance_{waggle}_Labels.csv')
     return df[columns]
-
-
-# def createVideoPackageWithRuns(df, dirName, FPS=30):
-#     columns = ['StartFrame', 'EndFrame', 'ManualRunAngle_Deg', 'RunTime_Sec']
-#     os.makeDir(dirName)
-#     for beeId in labels:
-#         beeDf = df[df['BeeLabel'] == beeId].copy()
-#         rows = []
-#         for i, row in beeDf.iterrows():
-#             if i % 2 == 0:
-#                 startFrame = row.frame
-#                 startPoint = row.point
-#             else:
-#                 endFrame = row.frame
-#                 endPoint = row.point
-#                 duration = (endFrame - startFrame) / FPS
-#                 angle = getAngle(startPoint, endPoint)
-#                 newRow = [startFrame, endFrame, angle, duration]
-#                 rows.append(newRow)
-#             df = pd.DataFrame(rows, columns=columns)
 
 
 def xml_to_df(xml_path, video_path):
@@ -194,45 +144,92 @@ def xml_to_df(xml_path, video_path):
     waggles_df = createWagglesDF(label_df)
     return waggles_df
 
+
 def df_to_mp4(df, video_path):
     # Read the .mkv file
     cap = cv2.VideoCapture(video_path)
 
-    # Get the frames
-    frames = []
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frames.append(frame)
+    # Get the frames properties
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    frames_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))  # `width`
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # `height`
 
+    # create the video writer
+    print(f'fps: {fps}, frames_count: {frames_count}, width: {width}, height: {height}')
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter('output.mp4', fourcc, fps, (width, height))
+
+    curr_frame_num = 0  # the xml file indexes from 0
+    begin_dict = 0
+    end_dict = 0
+    frames = {}
+
+    print('looping through dataframe')
     # Loop through the DataFrame
     for i, row in df.iterrows():
-        start_frame = row['startFrame']
-        end_frame = row['endFrame']
+        start_frame = int(row['startFrame'])
+        end_frame = int(row['endFrame'])
         angle = row['angle']
-        start_point = (row['startPointX'], row['startPointY'])
-        end_point = (row['endPointX'], row['endPointY'])
+        start_point = (int(row['startPointX']), int(row['startPointY']))
+        end_point = (int(row['endPointX']), int(row['endPointY']))
 
-        # Select the frames
-        for j in range(start_frame, end_frame):
+        # Read the frames until you reach the frame in question
+        while curr_frame_num < start_frame:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            curr_frame_num += 1
+            out.write(frame)
+
+        # write the frames that will no longer be used (the dataframe is sorted by startFrame so if the startFrame is
+        # greater than the beginning of the dictionary, then we no longer will need those frames)
+        while begin_dict < start_frame and len(frames) > 0:
+            out.write(frames.pop(begin_dict))
+            begin_dict += 1
+
+        # Draw the lines on the relevant frames
+        for i in range(start_frame, end_frame):
+            # if the frame is already in the dictionary, then get it from the dict, otherwise read in the frame and add
+            # it to the dict
+            if i <= end_dict:
+                frame = frames[i]
+            else:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                curr_frame_num += 1
+                end_dict = i
+                frames[i] = frame
+
             # Draw the line
-            cv2.line(frames[j], start_point, end_point, (255, 0, 0), 2)
-            # Put the frame number on the frame
-            cv2.putText(frames[j], 'Frame: {}'.format(j), (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            # x = int(start_point[0] + (i - start_frame) * (end_point[0] - start_point[0]) / (end_frame - start_frame))
+            # y = int(angle * x + y_intercept)
+            # cv2.line(frame, (x - 10, y - 10), (x + 10, y + 10), (255, 0, 0), 5)
+            cv2.line(frame, start_point, end_point, (255, 0, 0), 5)
+            cv2.putText(
+                img=frame,
+                text='Frame: {}'.format(curr_frame_num),
+                org=(200, 200),
+                fontFace=cv2.FONT_HERSHEY_DUPLEX,
+                fontScale=3.0,
+                color=(125, 246, 55),
+                thickness=3)
+            out.write(frame)
 
-    # Write the frames to a new video file
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter('output.mp4', fourcc, 20.0, (640, 480))
-    for frame in frames:
-        out.write(frame)
+    print('done drawing lines')
+    cap.release()
     out.release()
+    cv2.destroyAllWindows()
     return out
+
 
 def xml_to_mp4(xml_path, video_path):
     df = xml_to_df(xml_path, video_path)
     out = df_to_mp4(df, video_path)
     return out
+
 
 def convert_to_mp4(mkv_file):
     name, ext = os.path.splitext(mkv_file)
@@ -242,4 +239,4 @@ def convert_to_mp4(mkv_file):
 
 
 if __name__ == '__main__':
-    xml_to_mp4("xml/BeeWaggleVideo_36.xml", "raw_videos/output0036.mkv")
+    xml_to_mp4("xml/BeeWaggleVideo_39_revised_2.xml", "raw_videos/output0039.mkv")
