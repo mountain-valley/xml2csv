@@ -67,13 +67,10 @@ def createWagglesDF(df, FPS=30, waggle=41):
                'framesStart', 'framesEnd', 'pointsStart', 'pointsEnd']
 
     rows = []
-    for beeId in zip(labelsStarts, labelEnds):
+    for (beeIdStart, beeIdEnd) in zip(labelsStarts, labelEnds):
         # first get a list of all the instances of labels for the given beeId
-        # beeId is a tuple in the format of (bs#, be#)
-        beeIdStart, beeIdEnd = beeId
-        beeDfStart, beeDfEnd = df[df['BeeLabel'] == beeIdStart].copy(), df[df['BeeLabel'] == beeIdEnd].copy()
-        labelList = pd.concat([beeDfEnd, beeDfStart])
-        labelList.sort_values(by='frame', ignore_index=True, inplace=True)  # labelList is a dataframe with all the
+        labelList = df[(df['BeeLabel'] == beeIdStart) | (df['BeeLabel'] == beeIdEnd)]
+        # labelList is a dataframe with all the
         # label instances of the beeId, ordered by frame
 
         curBeeLabel = beeIdStart
@@ -84,7 +81,9 @@ def createWagglesDF(df, FPS=30, waggle=41):
         pointsStart = []
         pointsEnd = []
 
-        # calulate angle and duration of waggles.
+        last_label_index = int(labelList.iat[-1, 1])
+
+        # calculate angle and duration of waggles.
         for i, row in labelList.iterrows():
             curBeeLabel = row['BeeLabel']
             frame = int(row.frame)
@@ -92,7 +91,11 @@ def createWagglesDF(df, FPS=30, waggle=41):
 
             # if the current label is a start label and the last label was an end label, then we are starting a new
             # waggle
-            if (curBeeLabel == beeIdStart and lastBeeLabel == beeIdEnd) or i - 1 == len(labelList):
+            if (curBeeLabel == beeIdStart and lastBeeLabel == beeIdEnd) or (i == last_label_index and curBeeLabel == beeIdEnd):
+                # create new row
+                if i == last_label_index:
+                    framesEnd.append(frame)
+                    pointsEnd.append(point)
                 # create new row
                 if len(framesEnd) > 0:  # ensure that there are end frames
                     # average the start and end frames and the start and end points of the last waggle
@@ -114,7 +117,7 @@ def createWagglesDF(df, FPS=30, waggle=41):
                 framesEnd = []
                 pointsEnd = []
 
-            # Switching to end points (may be redundant/unnecessary)
+            # Switching to end points (maybe redundant/unnecessary)
             elif lastBeeLabel == beeIdStart and curBeeLabel == beeIdEnd:
                 framesEnd = [frame]
                 pointsEnd = [point]
@@ -135,7 +138,7 @@ def createWagglesDF(df, FPS=30, waggle=41):
     columns = ['startFrame', 'endFrame', 'angle', 'duration',
                'startPointX', 'startPointY', 'endPointX', 'endPointY', ]
     df = df.sort_values(by='startFrame')
-    df[columns].to_csv(f'WaggleDance_{waggle}_Labels.csv')
+    df[columns].to_csv(f'WaggleDance_Labels.csv')
     return df[columns]
 
 
@@ -157,16 +160,18 @@ def df_to_mp4(df, video_path):
 
     # create the video writer
     print(f'fps: {fps}, frames_count: {frames_count}, width: {width}, height: {height}')
-
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter('output.mp4', fourcc, fps, (width, height))
 
-    curr_frame_num = 0  # the xml file indexes from 0
+    curr_frame_num = 0  # Keeps track of the last frame loaded. The xml file indexes from 0
     begin_dict = 0
     end_dict = 0
-    frames = {}
+    # add 0th frame to the dictionary
+    ret, frame = cap.read()
+    frames = {0: frame}
 
-    print('looping through dataframe')
+    print('looping through waggle data and drawing lines'
+          '')
     # Loop through the DataFrame
     for i, row in df.iterrows():
         start_frame = int(row['startFrame'])
@@ -175,50 +180,54 @@ def df_to_mp4(df, video_path):
         start_point = (int(row['startPointX']), int(row['startPointY']))
         end_point = (int(row['endPointX']), int(row['endPointY']))
 
-        # Read the frames until you reach the frame in question
-        while curr_frame_num < start_frame:
+        # extend the dictionary to include the start and end frames
+        while end_dict < end_frame:
+            # Read the next frame
             ret, frame = cap.read()
             if not ret:
                 break
-            curr_frame_num += 1
-            out.write(frame)
-
-        # write the frames that will no longer be used (the dataframe is sorted by startFrame so if the startFrame is
-        # greater than the beginning of the dictionary, then we no longer will need those frames)
-        while begin_dict < start_frame and len(frames) > 0:
-            out.write(frames.pop(begin_dict))
-            begin_dict += 1
-
-        # Draw the lines on the relevant frames
-        for i in range(start_frame, end_frame):
-            # if the frame is already in the dictionary, then get it from the dict, otherwise read in the frame and add
-            # it to the dict
-            if i <= end_dict:
-                frame = frames[i]
-            else:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                curr_frame_num += 1
-                end_dict = i
-                frames[i] = frame
-
-            # Draw the line
-            # x = int(start_point[0] + (i - start_frame) * (end_point[0] - start_point[0]) / (end_frame - start_frame))
-            # y = int(angle * x + y_intercept)
-            # cv2.line(frame, (x - 10, y - 10), (x + 10, y + 10), (255, 0, 0), 5)
-            cv2.line(frame, start_point, end_point, (255, 0, 0), 5)
+            end_dict += 1
+            frames[end_dict] = frame
+            # write the frame number
             cv2.putText(
                 img=frame,
-                text='Frame: {}'.format(curr_frame_num),
+                text='Frame: {}'.format(end_dict),
                 org=(200, 200),
                 fontFace=cv2.FONT_HERSHEY_DUPLEX,
                 fontScale=3.0,
                 color=(125, 246, 55),
                 thickness=3)
-            out.write(frame)
+
+        # shorten the dictionary to include only the start and end frames
+        while begin_dict < start_frame:
+            out.write(frames.pop(begin_dict))
+            begin_dict += 1
+
+        # Draw the lines on the relevant frames
+        for i in range(start_frame, end_frame+1):
+            frame = frames[i]
+            # Draw the line
+            # x = int(start_point[0] + (i - start_frame) * (end_point[0] - start_point[0]) / (end_frame - start_frame))
+            # y = int(angle * x + y_intercept)
+            # cv2.line(frame, (x - 10, y - 10), (x + 10, y + 10), (255, 0, 0), 5)
+            cv2.line(frame, start_point, end_point, (255, 0, 0), 5)
 
     print('done drawing lines')
+    print('writing remaining frames')
+
+    # Write the remaining frames from the dictionary
+    while begin_dict <= end_dict:
+        out.write(frames.pop(begin_dict))
+        begin_dict += 1
+
+    # read and write all the remaining frames
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        out.write(frame)
+    print('done writing all frames')
+
     cap.release()
     out.release()
     cv2.destroyAllWindows()
