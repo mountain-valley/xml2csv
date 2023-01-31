@@ -1,31 +1,9 @@
-# I need to write a script in python that takes a .mkv video and an xml file and combines them. The .xml file contains
-# label information for the video. The video contains bee waggle dances. The xml file contains labels. Each label is in
-# following format:
-#    <track id="11" label="bs5" source="manual">
-#     <points frame="117" outside="0" occluded="0" keyframe="1" points="801.62,568.35" z_order="0">
-#     </points>
-#     <points frame="118" outside="1" occluded="0" keyframe="1" points="801.62,568.35" z_order="0">
-#     </points>
-#   </track>
-# The output will be a .mkv file with the labels represented as lines with a dot in the middle. Each line can be formed
-# using two or more labels in the xml file. The bs# label(s) represent the beginning of a line and be# labels represent
-# the end of a line. The label numbers match up with each other. For example, bs5 and be5 are the beginning and end of a
-# a line. The output video will have a line drawn between the bs5 and be5 labels. However, there may be multiple #bs5
-# labels and multiple #be5 labels. If multiple #bs5 labels exist, then the average position of all the #bs5 labels will
-# be used. If multiple #be5 labels exist, then the average position of all the #be5 labels will be used. Labels are
-# reused so labels are only averaged if they are found within a few frames of eachother.
-
-
 import xml.etree.ElementTree as Xet
 import cv2
 import os
 import ffmpeg
 import pandas as pd
 import numpy as np
-from moviepy.video.compositing.concatenate import concatenate_videoclips
-from moviepy.video.io.VideoFileClip import VideoFileClip
-from icecream import ic
-from collections import deque
 
 
 def getBeeLabels(xml_path):
@@ -56,7 +34,10 @@ def getBeeLabels(xml_path):
 
 def getAngle(p1, p2):
     v = np.array(p2) - np.array(p1)
-    return np.arctan(v[1] / v[0])  # TODO: account for dividing by zero
+    # account for dividing by zero
+    if v[0] == 0:
+        v[0] = 0.0001
+    return np.arctan(v[1] / v[0])
 
 
 def createWagglesDF(df, FPS=30, waggle=41):
@@ -66,12 +47,14 @@ def createWagglesDF(df, FPS=30, waggle=41):
                'startPointX', 'startPointY', 'endPointX', 'endPointY',
                'framesStart', 'framesEnd', 'pointsStart', 'pointsEnd']
 
+    df = df.sort_values(by='frame')
     rows = []
     for (beeIdStart, beeIdEnd) in zip(labelsStarts, labelEnds):
         # first get a list of all the instances of labels for the given beeId
         labelList = df[(df['BeeLabel'] == beeIdStart) | (df['BeeLabel'] == beeIdEnd)]
-        # labelList is a dataframe with all the
-        # label instances of the beeId, ordered by frame
+        # labelList is a dataframe with all the label instances of the beeId
+        # order LabelList by frame (
+        labelList = labelList.sort_values(by='frame')  # this line may be redundant considering the sorting before this for loop
 
         curBeeLabel = beeIdStart
         lastBeeLabel = beeIdEnd
@@ -91,7 +74,8 @@ def createWagglesDF(df, FPS=30, waggle=41):
 
             # if the current label is a start label and the last label was an end label, then we are starting a new
             # waggle
-            if (curBeeLabel == beeIdStart and lastBeeLabel == beeIdEnd) or (i == last_label_index and curBeeLabel == beeIdEnd):
+            if (curBeeLabel == beeIdStart and lastBeeLabel == beeIdEnd) or (
+                    i == last_label_index and curBeeLabel == beeIdEnd):
                 # create new row
                 if i == last_label_index:
                     framesEnd.append(frame)
@@ -204,7 +188,7 @@ def df_to_mp4(df, video_path):
             begin_dict += 1
 
         # Draw the lines on the relevant frames
-        for i in range(start_frame, end_frame+1):
+        for i in range(start_frame, end_frame + 1):
             frame = frames[i]
             # Draw the line
             # x = int(start_point[0] + (i - start_frame) * (end_point[0] - start_point[0]) / (end_frame - start_frame))
@@ -234,7 +218,7 @@ def df_to_mp4(df, video_path):
     return out
 
 
-def xml_to_mp4(xml_path, video_path):
+def xml_to_mp4(xml_path, video_path, long_lines=False):
     df = xml_to_df(xml_path, video_path)
     out = df_to_mp4(df, video_path)
     return out
@@ -248,4 +232,4 @@ def convert_to_mp4(mkv_file):
 
 
 if __name__ == '__main__':
-    xml_to_mp4("xml/BeeWaggleVideo_39_revised_2.xml", "raw_videos/output0039.mkv")
+    xml_to_mp4("xml/BeeWaggleAnnotations_38_revised.xml", "raw_videos/output0038.mkv", long_lines=True)
