@@ -4,5 +4,11 @@
 #ignore xml files
 /xml/*.xml
 
+#ignore csv files
+/csv/*.csv
+
+#ignore output videos
+/annotated
+
 #ignore virtual environment
 /venv/

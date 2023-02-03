@@ -40,7 +40,7 @@ def getAngle(p1, p2):
     return np.arctan(v[1] / v[0])
 
 
-def createWagglesDF(df, FPS=30, waggle=41):
+def createWagglesDF(df, n, FPS=30):
     labelsStarts = [f'bs{i}' for i in range(10)]
     labelEnds = [f'be{i}' for i in range(10)]
     columns = ['startFrame', 'endFrame', 'angle', 'duration',
@@ -54,7 +54,8 @@ def createWagglesDF(df, FPS=30, waggle=41):
         labelList = df[(df['BeeLabel'] == beeIdStart) | (df['BeeLabel'] == beeIdEnd)]
         # labelList is a dataframe with all the label instances of the beeId
         # order LabelList by frame (
-        labelList = labelList.sort_values(by='frame')  # this line may be redundant considering the sorting before this for loop
+        labelList = labelList.sort_values(
+            by='frame')  # this line may be redundant considering the sorting before this for loop
 
         curBeeLabel = beeIdStart
         lastBeeLabel = beeIdEnd
@@ -122,17 +123,17 @@ def createWagglesDF(df, FPS=30, waggle=41):
     columns = ['startFrame', 'endFrame', 'angle', 'duration',
                'startPointX', 'startPointY', 'endPointX', 'endPointY', ]
     df = df.sort_values(by='startFrame')
-    df[columns].to_csv(f'WaggleDance_Labels.csv')
+    df[columns].to_csv(f'csv/WaggleDance_{n}_Labels.csv')
     return df[columns]
 
 
-def xml_to_df(xml_path, video_path):
+def xml_to_df(xml_path, n):
     label_df = getBeeLabels(xml_path)
-    waggles_df = createWagglesDF(label_df)
+    waggles_df = createWagglesDF(label_df, n)
     return waggles_df
 
 
-def df_to_mp4(df, video_path):
+def df_to_mp4(df, video_path, n):
     # Read the .mkv file
     cap = cv2.VideoCapture(video_path)
 
@@ -145,7 +146,7 @@ def df_to_mp4(df, video_path):
     # create the video writer
     print(f'fps: {fps}, frames_count: {frames_count}, width: {width}, height: {height}')
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter('output.mp4', fourcc, fps, (width, height))
+    out = cv2.VideoWriter(f'annotated/labelsVideo_{n}.mp4', fourcc, fps, (width, height))
 
     curr_frame_num = 0  # Keeps track of the last frame loaded. The xml file indexes from 0
     begin_dict = 0
@@ -154,8 +155,7 @@ def df_to_mp4(df, video_path):
     ret, frame = cap.read()
     frames = {0: frame}
 
-    print('looping through waggle data and drawing lines'
-          '')
+    print('looping through waggle data and drawing lines')
     # Loop through the DataFrame
     for i, row in df.iterrows():
         start_frame = int(row['startFrame'])
@@ -218,18 +218,20 @@ def df_to_mp4(df, video_path):
     return out
 
 
-def xml_to_mp4(xml_path, video_path, long_lines=False):
-    df = xml_to_df(xml_path, video_path)
-    out = df_to_mp4(df, video_path)
+def xml_to_mp4(xml_path, video_path, n, long_lines=False):
+    df = xml_to_df(xml_path, n)
+    out = df_to_mp4(df, video_path, n)
     return out
 
 
 def convert_to_mp4(mkv_file):
     name, ext = os.path.splitext(mkv_file)
-    out_name = name + ".mp4"
+    out_name = "labelsVideo_" + n + ".mp4"
     ffmpeg.input(mkv_file).output(out_name).run()
     print("Finished converting {}".format(mkv_file))
 
 
 if __name__ == '__main__':
-    xml_to_mp4("xml/BeeWaggleAnnotations_38_revised.xml", "raw_videos/output0038.mkv", long_lines=True)
+    n = [38]
+    for i in n:
+        xml_to_mp4(f'xml/BeeWaggleVideo_{i}_revised.xml', f'raw_videos/output00{i}.mkv', i, long_lines=True)
