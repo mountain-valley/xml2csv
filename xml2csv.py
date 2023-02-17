@@ -4,6 +4,7 @@ import os
 import ffmpeg
 import pandas as pd
 import numpy as np
+import re
 
 
 def getBeeLabels(xml_path):
@@ -25,7 +26,7 @@ def getBeeLabels(xml_path):
         if len(points) == 0:
             continue
         frame = int(points[0].attrib['frame'])
-        point = points[0].attrib['points'].split(',')
+        point = re.split(';|,', points[0].attrib['points'])
         newRow = [beeLabel, index, frame, point]
         rows.append(newRow)
     df = pd.DataFrame(rows, columns=cols)
@@ -40,9 +41,13 @@ def getAngle(p1, p2):
     return np.arctan(v[1] / v[0])
 
 
-def createWagglesDF(df, n, FPS=30):
-    labelsStarts = [f'bs{i}' for i in range(10)]
-    labelEnds = [f'be{i}' for i in range(10)]
+def labels_to_waggles_DF(df, n, FPS=30):
+    if df.empty:
+        print("No labels found in xml file. Skipping this video")
+        return df
+
+    labelsStarts = [f'bs{i}' for i in range(20)]
+    labelEnds = [f'be{i}' for i in range(20)]
     columns = ['startFrame', 'endFrame', 'angle', 'duration',
                'startPointX', 'startPointY', 'endPointX', 'endPointY',
                'framesStart', 'framesEnd', 'pointsStart', 'pointsEnd']
@@ -53,12 +58,19 @@ def createWagglesDF(df, n, FPS=30):
         # first get a list of all the instances of labels for the given beeId
         labelList = df[(df['BeeLabel'] == beeIdStart) | (df['BeeLabel'] == beeIdEnd)]
         # labelList is a dataframe with all the label instances of the beeId
-        # order LabelList by frame (
+
+        # exit if there are no labels for this beeId
+        if labelList.empty:
+            print("no labels for beeId {}".format(beeIdStart))
+            continue
+
+        # order LabelList by frame
         labelList = labelList.sort_values(
             by='frame')  # this line may be redundant considering the sorting before this for loop
 
         curBeeLabel = beeIdStart
-        lastBeeLabel = beeIdEnd
+        lastBeeLabel = None
+        lastFrame = int(labelList.iloc[0].frame)
 
         framesStart = []
         framesEnd = []
@@ -71,17 +83,18 @@ def createWagglesDF(df, n, FPS=30):
         for i, row in labelList.iterrows():
             curBeeLabel = row['BeeLabel']
             frame = int(row.frame)
-            point = np.array(row.Point).astype(float)
+            point = np.array(row.Point[0:2]).astype(float)
 
-            # if the current label is a start label and the last label was an end label, then we are starting a new
-            # waggle
+            # if current label is a start label and the last label was an end label, then record the last waggle and
+            # reset the lists to start a new waggle
             if (curBeeLabel == beeIdStart and lastBeeLabel == beeIdEnd) or (
                     i == last_label_index and curBeeLabel == beeIdEnd):
-                # create new row
+
                 if i == last_label_index:
                     framesEnd.append(frame)
                     pointsEnd.append(point)
-                # create new row
+
+                # record the waggle
                 if len(framesEnd) > 0:  # ensure that there are end frames
                     # average the start and end frames and the start and end points of the last waggle
                     startFrame = int(np.mean(framesStart))
@@ -109,15 +122,26 @@ def createWagglesDF(df, n, FPS=30):
 
             # On start points
             elif curBeeLabel == beeIdStart:
+                # make sure the current frame is not too far from the last frame
+                if frame - lastFrame > 10:
+                    print(f"for label \"{curBeeLabel}\", \"{frame}\" / \"{lastFrame}\" start frame too far from last start frame ")
                 framesStart.append(frame)
                 pointsStart.append(point)
 
             # on end points
             elif curBeeLabel == beeIdEnd:
-                framesEnd.append(frame)
-                pointsEnd.append(point)
+                if frame - lastFrame > 10:
+                    print(
+                        f"for label \"{curBeeLabel}\", \"{frame}\" / \"{lastFrame}\" end frame too far from last end frame")
+                if len(framesStart) == 0:
+                    print(f"Warning: end label without start label. Skipping end label. Occurred at frame {frame} with label {beeIdEnd}")
+                    continue
+                else:
+                    framesEnd.append(frame)
+                    pointsEnd.append(point)
 
             lastBeeLabel = curBeeLabel
+            lastFrame = frame
 
     df = pd.DataFrame(rows, columns=columns)
     columns = ['startFrame', 'endFrame', 'angle', 'duration',
@@ -129,16 +153,21 @@ def createWagglesDF(df, n, FPS=30):
 
 def xml_to_df(xml_path, n):
     label_df = getBeeLabels(xml_path)
-    waggles_df = createWagglesDF(label_df, n)
+    waggles_df = labels_to_waggles_DF(label_df, n)
     return waggles_df
 
 
 def df_to_mp4(df, video_path, n):
+    if df.empty:
+        return
     # Read the .mkv file
     cap = cv2.VideoCapture(video_path)
 
     # Get the frames properties
     fps = int(cap.get(cv2.CAP_PROP_FPS))
+    if fps == 0:
+        print("Error reading video file. Skipping this video")
+        return
     frames_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))  # `width`
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # `height`
@@ -153,6 +182,9 @@ def df_to_mp4(df, video_path, n):
     end_dict = 0
     # add 0th frame to the dictionary
     ret, frame = cap.read()
+    if not ret:
+        print("Error reading frames. Skipping this video")
+        return
     frames = {0: frame}
 
     print('looping through waggle data and drawing lines')
@@ -224,7 +256,7 @@ def xml_to_mp4(xml_path, video_path, n, long_lines=False):
     return out
 
 
-def convert_to_mp4(mkv_file):
+def convert_to_mp4(mkv_file, n):
     name, ext = os.path.splitext(mkv_file)
     out_name = "labelsVideo_" + n + ".mp4"
     ffmpeg.input(mkv_file).output(out_name).run()
@@ -232,6 +264,18 @@ def convert_to_mp4(mkv_file):
 
 
 if __name__ == '__main__':
-    n = [38]
-    for i in n:
+    # n = ['01']
+    # n = ['00b', '01', '01b', '02', '02b', '10', '12', '40', '41']
+    # for i in n:
+    #     xml_to_mp4(f'xml/BeeWaggleVideo_{i}.xml', f'raw_videos/output00{i}.mkv', i, long_lines=True)
+    #     print(f"finished video {i}")
+    #
+    # revised = [11, 36, 38, 39, 45]
+    # for i in revised:
+    #     xml_to_mp4(f'xml/BeeWaggleVideo_{i}_revised.xml', f'raw_videos/output00{i}.mkv', i, long_lines=True)
+    #     print(f"finished video {i}")
+
+    revised = [36]
+    for i in revised:
         xml_to_mp4(f'xml/BeeWaggleVideo_{i}_revised.xml', f'raw_videos/output00{i}.mkv', i, long_lines=True)
+        print(f"finished video {i}")
