@@ -8,7 +8,7 @@
 /csv/*.csv
 
 #ignore output videos
-/annotated
+/annotated/*.mp4
 
 #ignore virtual environment
 /venv/

@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import re
 
+FRAME_THRESHOLD = 7  # The number of frames allowed between two starting or two ending labels
 
 def getBeeLabels(xml_path):
     """
@@ -54,6 +55,8 @@ def labels_to_waggles_DF(df, n, FPS=30):
 
     df = df.sort_values(by='frame')
     rows = []
+    errors = []
+
     for (beeIdStart, beeIdEnd) in zip(labelsStarts, labelEnds):
         # first get a list of all the instances of labels for the given beeId
         labelList = df[(df['BeeLabel'] == beeIdStart) | (df['BeeLabel'] == beeIdEnd)]
@@ -71,6 +74,7 @@ def labels_to_waggles_DF(df, n, FPS=30):
         curBeeLabel = beeIdStart
         lastBeeLabel = None
         lastFrame = int(labelList.iloc[0].frame)
+        last_id = int(labelList.iloc[0].Index)
 
         framesStart = []
         framesEnd = []
@@ -84,6 +88,7 @@ def labels_to_waggles_DF(df, n, FPS=30):
             curBeeLabel = row['BeeLabel']
             frame = int(row.frame)
             point = np.array(row.Point[0:2]).astype(float)
+            id = int(row.Index)
 
             # if current label is a start label and the last label was an end label, then record the last waggle and
             # reset the lists to start a new waggle
@@ -123,16 +128,15 @@ def labels_to_waggles_DF(df, n, FPS=30):
             # On start points
             elif curBeeLabel == beeIdStart:
                 # make sure the current frame is not too far from the last frame
-                if frame - lastFrame > 10:
-                    print(f"for label \"{curBeeLabel}\", \"{frame}\" / \"{lastFrame}\" start frame too far from last start frame ")
+                if frame - lastFrame > FRAME_THRESHOLD:
+                    errors.append([curBeeLabel, lastFrame, frame, 'start'])
                 framesStart.append(frame)
                 pointsStart.append(point)
 
             # on end points
             elif curBeeLabel == beeIdEnd:
-                if frame - lastFrame > 10:
-                    print(
-                        f"for label \"{curBeeLabel}\", \"{frame}\" / \"{lastFrame}\" end frame too far from last end frame")
+                if frame - lastFrame > FRAME_THRESHOLD:
+                    errors.append([curBeeLabel, lastFrame, frame, 'end'])
                 if len(framesStart) == 0:
                     print(f"Warning: end label without start label. Skipping end label. Occurred at frame {frame} with label {beeIdEnd}")
                     continue
@@ -142,12 +146,18 @@ def labels_to_waggles_DF(df, n, FPS=30):
 
             lastBeeLabel = curBeeLabel
             lastFrame = frame
+            last_id = id
 
     df = pd.DataFrame(rows, columns=columns)
     columns = ['startFrame', 'endFrame', 'angle', 'duration',
                'startPointX', 'startPointY', 'endPointX', 'endPointY', ]
     df = df.sort_values(by='startFrame')
     df[columns].to_csv(f'csv/WaggleDance_{n}_Labels.csv')
+
+    errors.sort(key=lambda i: i[1])
+    for line in errors:
+        print(f"for label \"{line[0]}\", \"{line[1]}\" / \"{line[2]}\" {line[3]} frames too far from each other")
+
     return df[columns]
 
 
